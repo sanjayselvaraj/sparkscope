@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from sparkscope.parser.models import Job, SparkRun, Stage, Task, TaskMetrics
@@ -31,12 +32,28 @@ class EventLogParseError(Exception):
     """Raised when the input does not look like a Spark event log at all."""
 
 
-def _iter_json_lines(lines: Iterable[str]) -> Iterator[dict]:
-    """Yield parsed JSON objects, skipping blank lines.
+@dataclass
+class _LineStats:
+    """Mutable counter shared with :func:`_iter_json_lines`.
+
+    Using a small object (rather than a return value) lets the generator report
+    how many lines it skipped without breaking its lazy, one-line-at-a-time
+    contract -- the caller reads ``.skipped`` after the stream is exhausted.
+    """
+
+    skipped: int = 0
+
+
+def _iter_json_lines(lines: Iterable[str], stats: _LineStats) -> Iterator[dict]:
+    """Yield parsed JSON objects, counting lines that fail to decode.
 
     A malformed line is skipped rather than fatal: real logs can contain a
     truncated final line if the application was killed mid-write, and we would
-    rather analyze the 99% that parsed than refuse the whole file.
+    rather analyze the 99% that parsed than refuse the whole file. Each skipped
+    line increments ``stats.skipped`` so the caller can warn the user -- silent
+    data loss and a genuinely healthy log must not look identical.
+
+    Blank lines are not counted as skips: they are expected padding, not corruption.
     """
     for raw in lines:
         raw = raw.strip()
@@ -45,9 +62,14 @@ def _iter_json_lines(lines: Iterable[str]) -> Iterator[dict]:
         try:
             obj = json.loads(raw)
         except json.JSONDecodeError:
+            stats.skipped += 1
             continue
         if isinstance(obj, dict):
             yield obj
+        else:
+            # Valid JSON but not an object (e.g. a bare array/number) is corrupt
+            # for our purposes -- count it rather than drop it silently.
+            stats.skipped += 1
 
 
 def _task_metrics_from_event(event: dict) -> TaskMetrics:
@@ -65,12 +87,29 @@ def _task_metrics_from_event(event: dict) -> TaskMetrics:
         shuffle_read.get("Remote Bytes Read", 0)
     )
 
-    duration = int(info.get("Finish Time", 0)) - int(info.get("Launch Time", 0))
-    if duration < 0:
-        duration = 0
+    # Duration semantics (important -- these are NOT the same measure):
+    #
+    # * "Executor Run Time" is the CPU/compute time the task actually spent
+    #   running on the executor. It EXCLUDES scheduler delay, task
+    #   deserialization, result serialization, and GC-adjacent waits. This is
+    #   the right signal for *skew* -- we want to compare how much real work
+    #   each task did, not how long it sat in a queue.
+    #
+    # * "Finish Time - Launch Time" is wall-clock elapsed time for the attempt.
+    #   It INCLUDES scheduling/serialization overhead, so two tasks doing equal
+    #   work can differ here purely due to cluster contention.
+    #
+    # We therefore prefer "Executor Run Time" and only fall back to the
+    # wall-clock delta when run time is missing (malformed/partial task). The
+    # fallback is best-effort: a stage mixing the two measures could compare
+    # slightly apples-to-oranges, but in practice every real completed task
+    # carries "Executor Run Time", so the fallback fires only for broken tasks.
+    wall_clock = int(info.get("Finish Time", 0)) - int(info.get("Launch Time", 0))
+    if wall_clock < 0:
+        wall_clock = 0
 
     return TaskMetrics(
-        duration_ms=int(metrics.get("Executor Run Time", duration) or duration),
+        duration_ms=int(metrics.get("Executor Run Time", wall_clock) or wall_clock),
         shuffle_read_bytes=read_bytes,
         shuffle_write_bytes=int(shuffle_write.get("Shuffle Bytes Written", 0)),
         memory_spilled_bytes=int(metrics.get("Memory Bytes Spilled", 0)),
@@ -162,7 +201,14 @@ def _ensure_stage(run: SparkRun, stage_info: dict) -> Stage:
 
 
 def parse_file(path: str | Path) -> SparkRun:
-    """Parse a Spark event-log file into a :class:`SparkRun`, streaming line by line."""
+    """Parse a Spark event-log file into a :class:`SparkRun`, streaming line by line.
+
+    Records the number of undecodable lines on ``run.skipped_lines`` so callers
+    can warn the user when a log was partially corrupt.
+    """
     path = Path(path)
+    stats = _LineStats()
     with path.open("r", encoding="utf-8") as fh:
-        return parse_events(_iter_json_lines(fh))
+        run = parse_events(_iter_json_lines(fh, stats))
+    run.skipped_lines = stats.skipped
+    return run

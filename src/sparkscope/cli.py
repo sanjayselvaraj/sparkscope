@@ -14,7 +14,10 @@ from rich.console import Console
 from rich.table import Table
 
 from sparkscope import __version__
+from sparkscope.analysis import skew as _skew  # noqa: F401  (registers SkewDetector)
+from sparkscope.analysis.base import run_all
 from sparkscope.parser.event_log import EventLogParseError, parse_file
+from sparkscope.report.findings import render_json, render_terminal
 
 app = typer.Typer(
     name="sparkscope",
@@ -62,19 +65,33 @@ def analyze(
     ),
 ) -> None:
     """Analyze a Spark event log and report performance diagnostics."""
-    # Day 2: parse -> build execution model -> show a per-stage summary.
-    # Detectors (Day 8+) will consume this same model and add a findings report.
+    # Pipeline: parse -> build execution model -> run detectors -> report.
     try:
         run = parse_file(event_log)
     except EventLogParseError as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=2) from exc
 
+    findings = run_all(run)
+
+    if output_json:
+        # JSON mode prints only the machine-readable payload (nothing else to
+        # stdout) so it can be piped into jq / a CI gate without stray text.
+        print(render_json(findings, top))
+        return
+
     app_name = run.app_name or "(unknown)"
     app_id = run.app_id or "n/a"
     console.print(f"[bold]SparkScope[/bold] {__version__}")
     console.print(f"Application : [cyan]{app_name}[/cyan]  ({app_id})")
     console.print(f"Jobs: {len(run.jobs)}   Stages: {len(run.stages)}\n")
+
+    # Surface partial-corruption so data loss is never silently invisible.
+    if run.skipped_lines:
+        console.print(
+            f"[yellow]warning:[/yellow] skipped {run.skipped_lines} unparseable "
+            "event-log line(s); results may be incomplete.\n"
+        )
 
     table = Table(title="Stage summary")
     table.add_column("Stage", justify="right")
@@ -94,9 +111,8 @@ def analyze(
             f"{stage.skew_ratio:.1f}",
         )
     console.print(table)
-
-    if output_json:
-        console.print("[dim](JSON reporter arrives with the detectors in Week 2.)[/dim]")
+    console.print()
+    render_terminal(console, findings, top)
 
 
 if __name__ == "__main__":

@@ -117,6 +117,9 @@ class SparkRun:
     app_id: str = ""
     jobs: dict[int, Job] = field(default_factory=dict)
     stages: dict[tuple[int, int], Stage] = field(default_factory=dict)
+    # Count of event-log lines that could not be JSON-decoded (truncated/corrupt).
+    # Surfaced as a warning so data loss is never silently mistaken for a healthy log.
+    skipped_lines: int = 0
 
     def stage_list(self) -> list[Stage]:
         """All stages, in a stable order (by stage id then attempt)."""

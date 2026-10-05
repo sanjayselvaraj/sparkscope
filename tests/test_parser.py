@@ -99,6 +99,72 @@ def test_empty_or_non_spark_input_raises():
         parse_events([{"foo": "bar"}])
 
 
+def test_malformed_and_truncated_lines_are_skipped_and_counted(tmp_path):
+    """A corrupt/truncated line must be skipped AND counted (not silently lost)."""
+    log = tmp_path / "partially-corrupt.log"
+    log.write_text(
+        '{"Event":"SparkListenerApplicationStart","App Name":"demo","App ID":"a1"}\n'
+        "this is not json at all\n"  # garbage line
+        '{"Event":"SparkListenerTaskEnd","Stage ID":0,"Stage Attempt ID":0,'
+        '"Task Info":{"Task ID":0,"Launch Time":0,"Finish Time":100},'
+        '"Task Metrics":{"Executor Run Time":100}}\n'
+        '{"Event":"SparkListenerTaskEnd","Stage ID":0,"Stage Att'  # truncated final line
+    )
+    run = parse_file(log)
+    # The good events still parsed...
+    assert run.app_name == "demo"
+    assert len(run.stages[(0, 0)].tasks) == 1
+    # ...and the two bad lines were counted, not hidden.
+    assert run.skipped_lines == 2
+
+
+def test_blank_lines_are_not_counted_as_skipped(tmp_path):
+    log = tmp_path / "with-blanks.log"
+    log.write_text(
+        '{"Event":"SparkListenerApplicationStart","App Name":"demo","App ID":"a1"}\n'
+        "\n"
+        "   \n"
+        '{"Event":"SparkListenerTaskEnd","Stage ID":0,"Stage Attempt ID":0,'
+        '"Task Info":{"Task ID":0},"Task Metrics":{}}\n'
+    )
+    run = parse_file(log)
+    assert run.skipped_lines == 0
+
+
+def test_stage_attempts_are_kept_separate():
+    """Attempt 0 and attempt 1 of the same stage id must not be merged.
+
+    Spark re-runs a stage on failure; blending the failed partial attempt with
+    the retry would corrupt task counts and skew math. The (stage_id, attempt)
+    key guarantees separation.
+    """
+    run = parse_events(
+        [
+            _task_end_attempt(3, 0, 0, 100),
+            _task_end_attempt(3, 0, 1, 100),
+            _task_end_attempt(3, 1, 2, 900),  # same stage, attempt 1
+            _task_end_attempt(3, 1, 3, 950),
+        ]
+    )
+    assert (3, 0) in run.stages
+    assert (3, 1) in run.stages
+    assert len(run.stages[(3, 0)].tasks) == 2
+    assert len(run.stages[(3, 1)].tasks) == 2
+    # Metrics do not bleed across attempts.
+    assert run.stages[(3, 0)].max_task_ms == 100
+    assert run.stages[(3, 1)].max_task_ms == 950
+
+
+def _task_end_attempt(stage_id: int, attempt: int, task_id: int, run_ms: int) -> dict:
+    return {
+        "Event": "SparkListenerTaskEnd",
+        "Stage ID": stage_id,
+        "Stage Attempt ID": attempt,
+        "Task Info": {"Task ID": task_id, "Launch Time": 0, "Finish Time": run_ms},
+        "Task Metrics": {"Executor Run Time": run_ms},
+    }
+
+
 def test_fixture_end_to_end():
     run = parse_file(FIXTURE)
     assert run.app_name == "sparkscope-skew-fixture"
