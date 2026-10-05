@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sparkscope"
+version = "0.1.0"
+description = "Diagnose Apache Spark performance issues (skew, spill, shuffle bloat, bad joins) straight from event logs. No cluster required."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "SparkScope contributors" }]
+keywords = ["spark", "pyspark", "performance", "data-engineering", "diagnostics", "event-log"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+# PySpark is only needed to REGENERATE the example event-log fixture,
+# not to run sparkscope itself. Kept out of core deps on purpose.
+spark = [
+    "pyspark>=3.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-handle/sparkscope"
+Repository = "https://github.com/your-handle/sparkscope"
+Issues = "https://github.com/your-handle/sparkscope/issues"
+
+[project.scripts]
+sparkscope = "sparkscope.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sparkscope"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# UP045 wants `X | None`, but we support Python 3.9 where `Optional[...]` is required.
+ignore = ["UP045"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer's API *requires* calling typer.Option/typer.Argument in argument
+# defaults; B008 flags that pattern but it is the framework's intended idiom.
+"src/sparkscope/cli.py" = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.9"
+warn_unused_ignores = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
