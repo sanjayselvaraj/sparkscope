@@ -82,9 +82,27 @@ class Stage:
         return sum(t.metrics.shuffle_write_bytes for t in self.tasks)
 
     @property
+    def total_memory_spilled_bytes(self) -> int:
+        return sum(t.metrics.memory_spilled_bytes for t in self.tasks)
+
+    @property
+    def total_disk_spilled_bytes(self) -> int:
+        return sum(t.metrics.disk_spilled_bytes for t in self.tasks)
+
+    @property
     def total_spill_bytes(self) -> int:
+        return self.total_memory_spilled_bytes + self.total_disk_spilled_bytes
+
+    @property
+    def total_input_bytes(self) -> int:
+        return sum(t.metrics.input_bytes for t in self.tasks)
+
+    @property
+    def tasks_with_spill(self) -> int:
         return sum(
-            t.metrics.memory_spilled_bytes + t.metrics.disk_spilled_bytes for t in self.tasks
+            1
+            for t in self.tasks
+            if (t.metrics.memory_spilled_bytes + t.metrics.disk_spilled_bytes) > 0
         )
 
     @property

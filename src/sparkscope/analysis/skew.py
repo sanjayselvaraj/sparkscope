@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from sparkscope.analysis.base import Detector, register
 from sparkscope.analysis.finding import Confidence, Finding, Severity
+from sparkscope.analysis.util import format_bytes, format_ms, safe_median
 from sparkscope.parser.models import SparkRun, Stage, Task
 
 #: Minimum tasks in a stage before skew is meaningful (below this, it's noise).
@@ -72,26 +73,6 @@ def _task_data_bytes(task: Task) -> int:
     """Data volume a task handled: shuffle read + spill (the drivers of skew)."""
     m = task.metrics
     return m.shuffle_read_bytes + m.memory_spilled_bytes + m.disk_spilled_bytes
-
-
-def _median(values: list[float]) -> float:
-    from statistics import median
-
-    return median(values) if values else 0.0
-
-
-def _format_ms(ms: float) -> str:
-    return f"{ms / 1000:.1f}s" if ms >= 1000 else f"{ms:.0f}ms"
-
-
-def _format_bytes(n: float) -> str:
-    units = ["B", "KB", "MB", "GB", "TB"]
-    size = float(n)
-    for unit in units:
-        if size < 1024 or unit == units[-1]:
-            return f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}TB"
 
 
 @register
@@ -128,7 +109,7 @@ class SkewDetector(Detector):
         # Find the slowest task and compare its data volume to the median task's.
         hot_task = max(stage.tasks, key=lambda t: t.metrics.duration_ms)
         data_volumes = [_task_data_bytes(t) for t in stage.tasks]
-        median_data = _median([float(v) for v in data_volumes])
+        median_data = safe_median([float(v) for v in data_volumes])
         hot_data = _task_data_bytes(hot_task)
 
         data_ratio = (hot_data / median_data) if median_data > 0 else 0.0
@@ -139,18 +120,18 @@ class SkewDetector(Detector):
 
         # --- evidence: OBSERVED FACTS only (no inference here) -----------------
         evidence = [
-            f"slowest task {_format_ms(hot_ms)} vs median {_format_ms(median_ms)} "
+            f"slowest task {format_ms(hot_ms)} vs median {format_ms(median_ms)} "
             f"({time_ratio:.1f}x longer)",
             f"{len(stage.tasks)} tasks in stage",
         ]
         if median_data > 0:
             evidence.append(
-                f"slowest task handled {_format_bytes(hot_data)} vs median "
-                f"{_format_bytes(median_data)} ({data_ratio:.1f}x more data)"
+                f"slowest task handled {format_bytes(hot_data)} vs median "
+                f"{format_bytes(median_data)} ({data_ratio:.1f}x more data)"
             )
         elif hot_data > 0:
             evidence.append(
-                f"slowest task handled {_format_bytes(hot_data)} "
+                f"slowest task handled {format_bytes(hot_data)} "
                 "(peers reported no shuffle/spill data)"
             )
 

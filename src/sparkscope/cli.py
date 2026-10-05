@@ -14,7 +14,15 @@ from rich.console import Console
 from rich.table import Table
 
 from sparkscope import __version__
-from sparkscope.analysis import skew as _skew  # noqa: F401  (registers SkewDetector)
+
+# Importing each detector module registers it in the detector registry via the
+# @register side-effect. run_all() then runs whatever is registered. Keep these
+# imports explicit (not a dynamic scan) so the active detector set is obvious.
+from sparkscope.analysis import join as _join  # noqa: F401
+from sparkscope.analysis import partition as _partition  # noqa: F401
+from sparkscope.analysis import shuffle as _shuffle  # noqa: F401
+from sparkscope.analysis import skew as _skew  # noqa: F401
+from sparkscope.analysis import spill as _spill  # noqa: F401
 from sparkscope.analysis.base import run_all
 from sparkscope.parser.event_log import EventLogParseError, parse_file
 from sparkscope.report.findings import render_json, render_terminal

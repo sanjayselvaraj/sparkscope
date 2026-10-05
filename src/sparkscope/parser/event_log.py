@@ -162,19 +162,21 @@ def parse_events(events: Iterable[dict]) -> SparkRun:
             stage_id = int(event.get("Stage ID", -1))
             attempt = int(event.get("Stage Attempt ID", 0))
             key = (stage_id, attempt)
-            stage = run.stages.get(key)
-            if stage is None:
-                stage = Stage(stage_id=stage_id, attempt_id=attempt)
-                run.stages[key] = stage
+            # A TaskEnd can arrive for a stage we have not seen a Submitted event
+            # for (truncated logs, or events out of order); create it on demand.
+            task_stage = run.stages.get(key)
+            if task_stage is None:
+                task_stage = Stage(stage_id=stage_id, attempt_id=attempt)
+                run.stages[key] = task_stage
             info = event.get("Task Info", {})
             task = Task(
-                task_id=int(info.get("Task ID", len(stage.tasks))),
+                task_id=int(info.get("Task ID", len(task_stage.tasks))),
                 stage_id=stage_id,
                 stage_attempt_id=attempt,
                 metrics=_task_metrics_from_event(event),
                 failed=bool(info.get("Failed", False)),
             )
-            stage.tasks.append(task)
+            task_stage.tasks.append(task)
 
     if not saw_any_spark_event:
         raise EventLogParseError(
