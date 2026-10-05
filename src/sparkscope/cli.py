@@ -8,12 +8,13 @@ body with the real parse -> model -> report pipeline.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from sparkscope import __version__
+from sparkscope.parser.event_log import EventLogParseError, parse_file
 
 app = typer.Typer(
     name="sparkscope",
@@ -34,7 +35,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
-    _version: Optional[bool] = typer.Option(
+    _version: bool | None = typer.Option(
         None,
         "--version",
         callback=_version_callback,
@@ -61,15 +62,41 @@ def analyze(
     ),
 ) -> None:
     """Analyze a Spark event log and report performance diagnostics."""
-    # Day 1 stub: validate input, prove the wiring, then exit.
-    # Day 3-7 replaces this with: parse -> build model -> run detectors -> report.
+    # Day 2: parse -> build execution model -> show a per-stage summary.
+    # Detectors (Day 8+) will consume this same model and add a findings report.
+    try:
+        run = parse_file(event_log)
+    except EventLogParseError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    app_name = run.app_name or "(unknown)"
+    app_id = run.app_id or "n/a"
     console.print(f"[bold]SparkScope[/bold] {__version__}")
-    console.print(f"Target : [cyan]{event_log}[/cyan]")
-    console.print(f"Top N  : {top}   JSON: {output_json}")
-    console.print(
-        "[yellow]Parser not wired yet (Day 1 scaffold). "
-        "Coming in Week 1: stage/task model + detectors.[/yellow]"
-    )
+    console.print(f"Application : [cyan]{app_name}[/cyan]  ({app_id})")
+    console.print(f"Jobs: {len(run.jobs)}   Stages: {len(run.stages)}\n")
+
+    table = Table(title="Stage summary")
+    table.add_column("Stage", justify="right")
+    table.add_column("Name", overflow="fold")
+    table.add_column("Tasks", justify="right")
+    table.add_column("Median ms", justify="right")
+    table.add_column("Max ms", justify="right")
+    table.add_column("Skew x", justify="right")
+
+    for stage in run.stage_list():
+        table.add_row(
+            f"{stage.stage_id}.{stage.attempt_id}",
+            stage.name or "-",
+            str(len(stage.tasks)),
+            f"{stage.median_task_ms:.0f}",
+            str(stage.max_task_ms),
+            f"{stage.skew_ratio:.1f}",
+        )
+    console.print(table)
+
+    if output_json:
+        console.print("[dim](JSON reporter arrives with the detectors in Week 2.)[/dim]")
 
 
 if __name__ == "__main__":

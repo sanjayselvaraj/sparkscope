@@ -26,9 +26,24 @@ def test_analyze_rejects_missing_path():
     assert result.exit_code != 0  # Typer's exists=True guard fires
 
 
-def test_analyze_accepts_existing_file(tmp_path):
-    log = tmp_path / "fake-event-log"
-    log.write_text("{}\n")
+def test_analyze_parses_a_minimal_event_log(tmp_path):
+    log = tmp_path / "event-log"
+    log.write_text(
+        '{"Event":"SparkListenerApplicationStart","App Name":"demo","App ID":"a1"}\n'
+        '{"Event":"SparkListenerTaskEnd","Stage ID":0,"Stage Attempt ID":0,'
+        '"Task Info":{"Task ID":0,"Launch Time":0,"Finish Time":100},'
+        '"Task Metrics":{"Executor Run Time":100}}\n'
+    )
     result = runner.invoke(app, ["analyze", str(log)])
     assert result.exit_code == 0
     assert "SparkScope" in result.stdout
+    assert "demo" in result.stdout
+    assert "Stage summary" in result.stdout
+
+
+def test_analyze_rejects_non_spark_file(tmp_path):
+    log = tmp_path / "not-a-spark-log"
+    log.write_text("{}\n")  # valid JSON, but no Spark events
+    result = runner.invoke(app, ["analyze", str(log)])
+    assert result.exit_code == 2
+    assert "error" in result.stdout.lower()
