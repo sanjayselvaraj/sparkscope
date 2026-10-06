@@ -25,6 +25,7 @@ from sparkscope.analysis import skew as _skew  # noqa: F401
 from sparkscope.analysis import spill as _spill  # noqa: F401
 from sparkscope.analysis.base import run_all
 from sparkscope.analysis.compare import compare_runs
+from sparkscope.analysis.regression import analyze_regressions
 from sparkscope.parser.event_log import EventLogParseError, parse_file
 from sparkscope.report.comparison import render_comparison_json, render_comparison_terminal
 from sparkscope.report.findings import render_json, render_terminal
@@ -139,11 +140,36 @@ def compare(
         readable=True,
         help="Current Spark event-log file to compare against the baseline.",
     ),
+    top: int = typer.Option(
+        10, "--top", "-n", min=1, help="Show at most this many of the worst findings."
+    ),
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        "--facts",
+        help="Show the RAW factual delta view (every metric change) instead of "
+        "the judged regression view.",
+    ),
     output_json: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of a terminal report."
     ),
 ) -> None:
-    """Compare two Spark event logs and report what changed (facts only)."""
+    """Compare two Spark event logs and report performance regressions.
+
+    By default this shows the JUDGED view: context-aware regression findings
+    ranked worst-first (growth that is merely proportional to input is treated
+    as scaling, not a regression). Use ``--top N`` to cap how many are shown.
+
+    Flag combinations:
+
+    * (no flags)        -> judged regressions, terminal report.
+    * ``--json``        -> judged regressions as JSON.
+    * ``--raw``         -> the raw factual delta view, terminal.
+    * ``--raw --json``  -> the raw factual delta view as JSON.
+
+    This command never sets a non-zero exit code based on findings; a CI gate
+    is a later milestone.
+    """
     try:
         base_run = parse_file(baseline)
     except EventLogParseError as exc:
@@ -157,10 +183,28 @@ def compare(
 
     c = compare_runs(base_run, cur_run)
 
+    # --- RAW factual view (unchanged behavior, now behind --raw/--facts). ----
+    if raw:
+        if output_json:
+            # JSON mode prints only the machine-readable payload (nothing else
+            # to stdout) so it can be piped into jq / a CI gate without text.
+            print(render_comparison_json(c))
+            return
+
+        base_name = base_run.app_name or "(unknown)"
+        cur_name = cur_run.app_name or "(unknown)"
+        console.print(
+            f"[bold]{base_name}[/bold] (baseline) vs [bold]{cur_name}[/bold] (current)\n"
+        )
+        _warn_skipped(base_run.skipped_lines, cur_run.skipped_lines)
+        render_comparison_terminal(console, c)
+        return
+
+    # --- JUDGED regression view (default). -----------------------------------
+    findings = analyze_regressions(c)
+
     if output_json:
-        # JSON mode prints only the machine-readable payload (nothing else to
-        # stdout) so it can be piped into jq / a CI gate without stray text.
-        print(render_comparison_json(c))
+        print(render_json(findings, top))
         return
 
     base_name = base_run.app_name or "(unknown)"
@@ -168,20 +212,27 @@ def compare(
     console.print(
         f"[bold]{base_name}[/bold] (baseline) vs [bold]{cur_name}[/bold] (current)\n"
     )
+    _warn_skipped(base_run.skipped_lines, cur_run.skipped_lines)
 
-    # Surface partial-corruption on either side so data loss is never invisible.
-    if base_run.skipped_lines:
+    if not findings:
+        console.print("[green]No significant performance regression detected.[/green]")
+        return
+
+    render_terminal(console, findings, top)
+
+
+def _warn_skipped(baseline_skipped: int, current_skipped: int) -> None:
+    """Surface partial-corruption on either side so data loss is never invisible."""
+    if baseline_skipped:
         console.print(
-            f"[yellow]warning:[/yellow] baseline skipped {base_run.skipped_lines} "
+            f"[yellow]warning:[/yellow] baseline skipped {baseline_skipped} "
             "unparseable event-log line(s); results may be incomplete.\n"
         )
-    if cur_run.skipped_lines:
+    if current_skipped:
         console.print(
-            f"[yellow]warning:[/yellow] current skipped {cur_run.skipped_lines} "
+            f"[yellow]warning:[/yellow] current skipped {current_skipped} "
             "unparseable event-log line(s); results may be incomplete.\n"
         )
-
-    render_comparison_terminal(console, c)
 
 
 if __name__ == "__main__":
