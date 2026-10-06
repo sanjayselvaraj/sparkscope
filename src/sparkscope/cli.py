@@ -24,7 +24,9 @@ from sparkscope.analysis import shuffle as _shuffle  # noqa: F401
 from sparkscope.analysis import skew as _skew  # noqa: F401
 from sparkscope.analysis import spill as _spill  # noqa: F401
 from sparkscope.analysis.base import run_all
+from sparkscope.analysis.compare import compare_runs
 from sparkscope.parser.event_log import EventLogParseError, parse_file
+from sparkscope.report.comparison import render_comparison_json, render_comparison_terminal
 from sparkscope.report.findings import render_json, render_terminal
 
 app = typer.Typer(
@@ -121,6 +123,65 @@ def analyze(
     console.print(table)
     console.print()
     render_terminal(console, findings, top)
+
+
+@app.command()
+def compare(
+    baseline: Path = typer.Argument(
+        ...,
+        exists=True,
+        readable=True,
+        help="Baseline Spark event-log file.",
+    ),
+    current: Path = typer.Argument(
+        ...,
+        exists=True,
+        readable=True,
+        help="Current Spark event-log file to compare against the baseline.",
+    ),
+    output_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of a terminal report."
+    ),
+) -> None:
+    """Compare two Spark event logs and report what changed (facts only)."""
+    try:
+        base_run = parse_file(baseline)
+    except EventLogParseError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+    try:
+        cur_run = parse_file(current)
+    except EventLogParseError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    c = compare_runs(base_run, cur_run)
+
+    if output_json:
+        # JSON mode prints only the machine-readable payload (nothing else to
+        # stdout) so it can be piped into jq / a CI gate without stray text.
+        print(render_comparison_json(c))
+        return
+
+    base_name = base_run.app_name or "(unknown)"
+    cur_name = cur_run.app_name or "(unknown)"
+    console.print(
+        f"[bold]{base_name}[/bold] (baseline) vs [bold]{cur_name}[/bold] (current)\n"
+    )
+
+    # Surface partial-corruption on either side so data loss is never invisible.
+    if base_run.skipped_lines:
+        console.print(
+            f"[yellow]warning:[/yellow] baseline skipped {base_run.skipped_lines} "
+            "unparseable event-log line(s); results may be incomplete.\n"
+        )
+    if cur_run.skipped_lines:
+        console.print(
+            f"[yellow]warning:[/yellow] current skipped {cur_run.skipped_lines} "
+            "unparseable event-log line(s); results may be incomplete.\n"
+        )
+
+    render_comparison_terminal(console, c)
 
 
 if __name__ == "__main__":

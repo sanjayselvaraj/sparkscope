@@ -39,3 +39,6 @@ secrets.*
 *.secret
 aws.json
 .aws/
+
+# Internal agent/workflow artifacts (plans, reviews) — not part of the OSS product
+.agents/
